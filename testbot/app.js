@@ -350,8 +350,8 @@ function receivedMessage(event) {
         setup(senderID);
         break;
 
-      case 'listall':
-        listAll(senderID);
+      case 'lists':
+        listSensors(senderID);
         break;
 
       case 'listloc':
@@ -362,9 +362,17 @@ function receivedMessage(event) {
         clearf(senderID);
         break;
 
+      case 'help':
+        sendHelp(senderID);
+        break;
+
       default:
         if (messageText.startsWith('rm')) {
           removeLocation(senderID, messageText.split(" ")[1]);
+        } else if (messageText.startsWith('name')) {
+          nameAlias(senderID, messageText.split(" ")[1], messageText.split(" ")[2]);
+      } else if (messageText.startsWith('value')) {
+          getPMValue(senderID, messageText.split(" ")[1]);
         } else {
           sendTextMessage(senderID, messageText);
         }
@@ -404,7 +412,7 @@ function setup(recipientId) {
 }
 
 //temporary function
-function listAll(senderId) {
+function listSensors(senderId) {
   var db = admin.database();
   var sPerUser = db.ref("sensorsPerUser/" + senderId + "/");
   sPerUser.once("value", (snapshot) => {
@@ -444,6 +452,25 @@ function clearf(senderId) {
       text: "clear data in firebase"
     }
   };
+  callSendAPI(messageData);
+}
+
+//temporary function
+function sendHelp(senderId) {
+  var messageData = {
+    recipient: {
+      id: senderId
+    },
+    message: {
+      attachment: {
+        type: "image",
+        payload: {
+          url: SERVER_URL + "/assets/command_help.png"
+        }
+      }
+    }
+  };
+
   callSendAPI(messageData);
 }
 
@@ -553,46 +580,53 @@ function listLocation(senderId) {
   });
 }
 
-function removeLocation(senderId, loc) {
-  var pathTo = "sensorsPerUser/" + senderId + "/" + loc;
-  var db = admin.database();
-  var sPerUser = db.ref(pathTo);
-  sPerUser.once("value", (snapshot) => {
-    snapshot.forEach(function(subsnapshot) {
-      subsnapshot.forEach(function(sensorsnapshot) {
-        var sensor = sensorsnapshot.key;
-        var p = "usersPerSensor/" + sensor;
-        var subdb = admin.database();
-        var ref = subdb.ref(p);
-        ref.once("value", (snap) => {
-          snap.forEach(function(child) {
-            child.forEach(function(userpair) {
-              var uid = userpair.key;
-              if (uid === senderId) {
-                var pp = "usersPerSensor/" + sensor + "/" + child.key;
-                var rmdb = admin.database();
-                var rm = rmdb.ref(pp);
-                rm.remove();
-                console.log("remove " + child.key + "/" + uid);
-              }
+function removeLocation(senderId, alias) {
+  var locPath = "userNameMap/" + senderId + "/" + alias;
+  var ldb = admin.database();
+  var l = ldb.ref(locPath);
+  l.once("value", (snapshot) => {
+    var loc = snapshot.val();
+    l.remove();
+    var pathTo = "sensorsPerUser/" + senderId + "/" + loc;
+    var db = admin.database();
+    var sPerUser = db.ref(pathTo);
+    sPerUser.once("value", (snapshot) => {
+      snapshot.forEach(function(subsnapshot) {
+        subsnapshot.forEach(function(sensorsnapshot) {
+          var sensor = sensorsnapshot.key;
+          var p = "usersPerSensor/" + sensor;
+          var subdb = admin.database();
+          var ref = subdb.ref(p);
+          ref.once("value", (snap) => {
+            snap.forEach(function(child) {
+              child.forEach(function(userpair) {
+                var uid = userpair.key;
+                if (uid === senderId) {
+                  var pp = "usersPerSensor/" + sensor + "/" + child.key;
+                  var rmdb = admin.database();
+                  var rm = rmdb.ref(pp);
+                  rm.remove();
+                  console.log("remove " + child.key + "/" + uid);
+                }
+              });
             });
           });
         });
       });
+      sPerUser.remove();
+      console.log("remove sensorPerUser " + loc);
+      removeLoc(senderId, loc);
+      console.log("remove locPerUser " + loc);
+      var messageData = {
+        recipient: {
+          id: senderId
+        },
+        message: {
+          text: "remove location finish"
+        }
+      };
+      callSendAPI(messageData);
     });
-    sPerUser.remove();
-    console.log("remove sensorPerUser " + loc);
-    removeLoc(senderId, loc);
-    console.log("remove locPerUser " + loc);
-    var messageData = {
-      recipient: {
-        id: senderId
-      },
-      message: {
-        text: "remove location finish"
-      }
-    };
-    callSendAPI(messageData);
   });
 }
 
@@ -607,6 +641,67 @@ function removeLoc(senderId, loc) {
       if (lat_lon.lat === lat && lat_lon.long === long) {
         locPerUser.child(subsnapshot.key).remove();
       }
+    });
+  });
+}
+
+//temporary function
+function nameAlias(senderId, loc, alias) {
+  var pathTo = "userNameMap/" + senderId;
+  var db = admin.database();
+  var userNM = db.ref(pathTo);
+  var al = {};
+  al[alias] = loc;
+  userNM.set(al);
+  sendTextMessage(senderId, "Setting alias finish");
+}
+
+//temporary function
+function getPMValue(senderId, alias) {
+  var locPath = "userNameMap/" + senderId + "/" + alias;
+  var ldb = admin.database();
+  var l = ldb.ref(locPath);
+  l.once("value", (snapshot) => {
+    var loc = snapshot.val();
+    var path = "sensorsPerUser/" + senderId + "/" + loc;
+    var db = admin.database();
+    var sPerUser = db.ref(path);
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    https.get("https://airbox.edimaxcloud.com/devices?token=EA81A1FA-8EDB-4CA0-B07B-A881C74B0401", (res) => {
+      console.log("status code:", res.statusCode);
+      console.log("headers:", res.headers);
+      var data = "";
+      res.on("data", (d) => {
+        data += d;
+      });
+      res.on("end", () => {
+        var rep = JSON.parse(data);
+        var alldata = rep.devices;
+        var len = alldata.length;
+        console.log(alldata.length);
+        var messageData = {
+          recipient: {
+            id: senderId
+          },
+          message: {
+            text: ""
+          }
+        };
+        sPerUser.once("value", (snapshot) => {
+          snapshot.forEach(function(subsnapshot) {
+            subsnapshot.forEach(function(sensorsnapshot) {
+              var sensor = sensorsnapshot.key;
+              for (var i = 0; i < len; i++) {
+                if (sensor === alldata[i].id) {
+                  messageData.message.text += sensor + "\[pm2.5\:" + alldata[i].pm25 + "\]\r";
+                  break;
+                }
+              }
+            });
+          });
+          callSendAPI(messageData);
+        });
+      });
     });
   });
 }
